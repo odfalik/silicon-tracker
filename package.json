@@ -4,11 +4,30 @@
   "description": "Live GPU, CPU, and power metrics for Apple Silicon Macs in VS Code",
   "version": "0.1.0",
   "publisher": "oded",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/odfalik/silicon-tracker"
+  },
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Visualization",
     "Other"
+  ],
+  "keywords": [
+    "apple silicon",
+    "m1",
+    "m2",
+    "m3",
+    "gpu",
+    "cpu",
+    "power",
+    "monitor",
+    "metrics",
+    "macos"
   ],
   "activationEvents": [
     "onStartupFinished"
