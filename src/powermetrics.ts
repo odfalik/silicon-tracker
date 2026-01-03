@@ -247,6 +247,24 @@ export class PowerMetricsCollector {
         }
     }
 
+    setSampleRate(newIntervalMs: number): void {
+        if (newIntervalMs === this.intervalMs) return;
+
+        this.intervalMs = newIntervalMs;
+        this.log(`Changing sample rate to ${newIntervalMs}ms`);
+
+        // Update polling interval
+        if (this.pollInterval) {
+            clearInterval(this.pollInterval);
+            this.pollInterval = setInterval(() => {
+                this.readMetrics();
+            }, this.intervalMs);
+        }
+
+        // Note: powermetrics process continues at original rate
+        // but we poll at the new rate (effectively downsampling when slower)
+    }
+
     stop(): void {
         if (this.startupTimeout) {
             clearTimeout(this.startupTimeout);

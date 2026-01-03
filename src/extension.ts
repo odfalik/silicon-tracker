@@ -8,8 +8,7 @@ let outputChannel: vscode.OutputChannel;
 let lastMetrics: Metrics | null = null;
 let metricsHistory: MetricsHistoryEntry[] = [];
 let panel: vscode.WebviewPanel | null = null;
-
-const HISTORY_DURATION_MS = 20000; // 20 seconds of history
+let isPanelVisible = false;
 
 interface MetricsHistoryEntry {
     timestamp: number;
@@ -22,29 +21,52 @@ interface MetricsHistoryEntry {
     gpuPower: number;
 }
 
+function getConfig() {
+    const config = vscode.workspace.getConfiguration('siliconTracker');
+    return {
+        sampleRate: config.get<number>('sampleRate', 1000),
+        backgroundSampleRate: config.get<number>('backgroundSampleRate', 2000),
+        historyDuration: config.get<number>('historyDuration', 20),
+        statusBarDisplay: config.get<string>('statusBarDisplay', 'gpu')
+    };
+}
+
+function getCurrentSampleRate(): number {
+    const config = getConfig();
+    return isPanelVisible ? config.sampleRate : config.backgroundSampleRate;
+}
+
+function getHistoryDurationMs(): number {
+    return getConfig().historyDuration * 1000;
+}
+
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Silicon Tracker');
 
     // Create single configurable status bar item
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBarItem.command = 'asitop.showPanel';
+    statusBarItem.command = 'siliconTracker.showPanel';
     statusBarItem.text = '$(pulse) --';
-    statusBarItem.tooltip = 'Apple Silicon Monitor - Click to open panel';
+    statusBarItem.tooltip = 'Silicon Tracker - Click to open panel';
     context.subscriptions.push(statusBarItem);
 
     // Register commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('asitop.start', startMonitoring),
-        vscode.commands.registerCommand('asitop.stop', stopMonitoring),
-        vscode.commands.registerCommand('asitop.showPanel', () => showPanel(context)),
-        vscode.commands.registerCommand('asitop.showDetails', showDetails)
+        vscode.commands.registerCommand('siliconTracker.start', startMonitoring),
+        vscode.commands.registerCommand('siliconTracker.stop', stopMonitoring),
+        vscode.commands.registerCommand('siliconTracker.showPanel', () => showPanel(context)),
+        vscode.commands.registerCommand('siliconTracker.showDetails', showDetails)
     );
 
     // Listen for configuration changes
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('asitop')) {
+            if (e.affectsConfiguration('siliconTracker')) {
                 updateStatusBar();
+                // Restart collector with new sample rate if running
+                if (collector) {
+                    restartWithNewSampleRate();
+                }
             }
         })
     );
@@ -53,14 +75,18 @@ export function activate(context: vscode.ExtensionContext) {
     startMonitoring();
 }
 
+async function restartWithNewSampleRate() {
+    if (!collector) return;
+
+    const newRate = getCurrentSampleRate();
+    collector.setSampleRate(newRate);
+}
+
 async function startMonitoring() {
     if (collector) {
         vscode.window.showInformationMessage('Silicon Tracker is already running');
         return;
     }
-
-    const config = vscode.workspace.getConfiguration('asitop');
-    const interval = config.get<number>('refreshInterval', 1000);
 
     // Check if running on macOS
     if (process.platform !== 'darwin') {
@@ -69,7 +95,8 @@ async function startMonitoring() {
     }
 
     try {
-        collector = new PowerMetricsCollector(interval, (msg) => outputChannel.appendLine(msg));
+        const sampleRate = getCurrentSampleRate();
+        collector = new PowerMetricsCollector(sampleRate, (msg) => outputChannel.appendLine(msg));
         sudoErrorShown = false;
 
         outputChannel.appendLine('Starting Silicon Tracker...');
@@ -85,7 +112,7 @@ async function startMonitoring() {
 
         await collector.start(onMetricsUpdate, onError);
 
-        statusBarItem.show();
+        updateStatusBarVisibility();
         vscode.window.showInformationMessage('Silicon Tracker started');
 
     } catch (err) {
@@ -170,20 +197,34 @@ function onMetricsUpdate(metrics: Metrics) {
     };
     metricsHistory.push(entry);
 
-    // Trim history to keep only last 20 seconds
-    const cutoff = now - HISTORY_DURATION_MS;
+    // Trim history based on configured duration
+    const cutoff = now - getHistoryDurationMs();
     metricsHistory = metricsHistory.filter(e => e.timestamp > cutoff);
 
     updateStatusBar();
     updatePanel();
 }
 
+function updateStatusBarVisibility() {
+    const config = getConfig();
+    if (config.statusBarDisplay === 'none') {
+        statusBarItem.hide();
+    } else {
+        statusBarItem.show();
+    }
+}
+
 function updateStatusBar() {
     if (!lastMetrics) return;
 
-    const config = vscode.workspace.getConfiguration('asitop');
-    const displayMode = config.get<string>('statusBarDisplay', 'gpu');
+    const config = getConfig();
+    const displayMode = config.statusBarDisplay;
     const m = lastMetrics;
+
+    if (displayMode === 'none') {
+        statusBarItem.hide();
+        return;
+    }
 
     let text = '';
     let tooltip = '';
@@ -223,6 +264,7 @@ function updateStatusBar() {
     statusBarItem.backgroundColor = isWarning
         ? new vscode.ThemeColor('statusBarItem.warningBackground')
         : undefined;
+    statusBarItem.show();
 }
 
 function showPanel(context: vscode.ExtensionContext) {
@@ -232,8 +274,8 @@ function showPanel(context: vscode.ExtensionContext) {
     }
 
     panel = vscode.window.createWebviewPanel(
-        'asitopMonitor',
-        'Apple Silicon Monitor',
+        'siliconTracker',
+        'Silicon Tracker',
         vscode.ViewColumn.Beside,
         {
             enableScripts: true,
@@ -243,9 +285,39 @@ function showPanel(context: vscode.ExtensionContext) {
 
     panel.webview.html = getWebviewContent();
 
+    // Handle panel visibility changes
+    panel.onDidChangeViewState(e => {
+        const wasVisible = isPanelVisible;
+        isPanelVisible = e.webviewPanel.visible;
+
+        if (wasVisible !== isPanelVisible && collector) {
+            restartWithNewSampleRate();
+        }
+    }, null, context.subscriptions);
+
     panel.onDidDispose(() => {
         panel = null;
+        isPanelVisible = false;
+        if (collector) {
+            restartWithNewSampleRate();
+        }
     }, null, context.subscriptions);
+
+    // Handle messages from webview
+    panel.webview.onDidReceiveMessage(message => {
+        if (message.type === 'updateSettings') {
+            const config = vscode.workspace.getConfiguration('siliconTracker');
+            if (message.sampleRate !== undefined) {
+                config.update('sampleRate', message.sampleRate, vscode.ConfigurationTarget.Global);
+            }
+            if (message.historyDuration !== undefined) {
+                config.update('historyDuration', message.historyDuration, vscode.ConfigurationTarget.Global);
+            }
+        }
+    }, null, context.subscriptions);
+
+    isPanelVisible = true;
+    restartWithNewSampleRate();
 
     // Send initial data
     updatePanel();
@@ -254,20 +326,26 @@ function showPanel(context: vscode.ExtensionContext) {
 function updatePanel() {
     if (!panel || !lastMetrics) return;
 
+    const config = getConfig();
     panel.webview.postMessage({
         type: 'update',
         metrics: lastMetrics,
-        history: metricsHistory
+        history: metricsHistory,
+        settings: {
+            sampleRate: config.sampleRate,
+            historyDuration: config.historyDuration
+        }
     });
 }
 
 function getWebviewContent(): string {
+    const config = getConfig();
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apple Silicon Monitor</title>
+    <title>Silicon Tracker</title>
     <style>
         * {
             margin: 0;
@@ -281,10 +359,13 @@ function getWebviewContent(): string {
             padding: 16px;
             overflow-x: hidden;
         }
-        h1 {
-            font-size: 18px;
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
             margin-bottom: 16px;
-            color: var(--vscode-foreground);
+        }
+        .status {
             display: flex;
             align-items: center;
             gap: 8px;
@@ -296,35 +377,92 @@ function getWebviewContent(): string {
             background: #4caf50;
             animation: pulse 2s infinite;
         }
+        .status-text {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+        }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
+        .settings-toggle {
+            background: none;
+            border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+            color: var(--vscode-foreground);
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .settings-toggle:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        .settings-panel {
+            background: var(--vscode-sideBar-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .settings-panel.visible {
+            display: block;
+        }
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .setting-row:last-child {
+            margin-bottom: 0;
+        }
+        .setting-label {
+            font-size: 12px;
+        }
+        .setting-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .setting-control input[type="range"] {
+            width: 120px;
+            accent-color: var(--vscode-focusBorder);
+        }
+        .setting-value {
+            font-size: 12px;
+            min-width: 40px;
+            text-align: right;
+            color: var(--vscode-descriptionForeground);
+        }
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
         }
         .card {
             background: var(--vscode-sideBar-background);
             border: 1px solid var(--vscode-panel-border);
             border-radius: 8px;
-            padding: 16px;
+            padding: 12px;
         }
         .card-title {
-            font-size: 12px;
+            font-size: 11px;
             text-transform: uppercase;
             color: var(--vscode-descriptionForeground);
-            margin-bottom: 8px;
-        }
-        .card-value {
-            font-size: 32px;
-            font-weight: bold;
             margin-bottom: 4px;
         }
+        .card-value {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
         .card-subtitle {
-            font-size: 12px;
+            font-size: 11px;
             color: var(--vscode-descriptionForeground);
         }
         .gpu-value { color: #42a5f5; }
@@ -334,16 +472,21 @@ function getWebviewContent(): string {
             background: var(--vscode-sideBar-background);
             border: 1px solid var(--vscode-panel-border);
             border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
         }
         .chart-title {
-            font-size: 14px;
-            margin-bottom: 12px;
+            font-size: 12px;
             color: var(--vscode-foreground);
         }
         .chart {
-            height: 150px;
+            height: 120px;
             position: relative;
             overflow: hidden;
         }
@@ -353,9 +496,9 @@ function getWebviewContent(): string {
         }
         .legend {
             display: flex;
-            gap: 16px;
-            margin-top: 8px;
-            font-size: 12px;
+            gap: 12px;
+            margin-top: 6px;
+            font-size: 11px;
         }
         .legend-item {
             display: flex;
@@ -363,25 +506,28 @@ function getWebviewContent(): string {
             gap: 4px;
         }
         .legend-color {
-            width: 12px;
-            height: 3px;
-            border-radius: 2px;
+            width: 10px;
+            height: 2px;
+            border-radius: 1px;
+        }
+        .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
         }
         .thermal {
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-top: 8px;
-            font-size: 12px;
-        }
-        .thermal-label {
-            color: var(--vscode-descriptionForeground);
+            gap: 6px;
         }
         .thermal-value {
-            padding: 2px 8px;
-            border-radius: 4px;
+            padding: 2px 6px;
+            border-radius: 3px;
             background: var(--vscode-badge-background);
             color: var(--vscode-badge-foreground);
+            font-size: 10px;
         }
         .thermal-nominal { background: #2e7d32; }
         .thermal-fair { background: #f57c00; }
@@ -389,7 +535,34 @@ function getWebviewContent(): string {
     </style>
 </head>
 <body>
-    <h1><span class="status-dot"></span> Apple Silicon Monitor</h1>
+    <div class="header">
+        <div class="status">
+            <span class="status-dot"></span>
+            <span class="status-text">Live</span>
+        </div>
+        <button class="settings-toggle" onclick="toggleSettings()">
+            <span>Settings</span>
+        </button>
+    </div>
+
+    <div class="settings-panel" id="settings">
+        <div class="setting-row">
+            <span class="setting-label">Sample Rate</span>
+            <div class="setting-control">
+                <input type="range" id="sampleRate" min="500" max="5000" step="100" value="${config.sampleRate}"
+                    onchange="updateSetting('sampleRate', this.value)">
+                <span class="setting-value" id="sampleRateValue">${config.sampleRate}ms</span>
+            </div>
+        </div>
+        <div class="setting-row">
+            <span class="setting-label">History Duration</span>
+            <div class="setting-control">
+                <input type="range" id="historyDuration" min="10" max="120" step="5" value="${config.historyDuration}"
+                    onchange="updateSetting('historyDuration', this.value)">
+                <span class="setting-value" id="historyDurationValue">${config.historyDuration}s</span>
+            </div>
+        </div>
+    </div>
 
     <div class="grid">
         <div class="card">
@@ -410,7 +583,10 @@ function getWebviewContent(): string {
     </div>
 
     <div class="chart-container">
-        <div class="chart-title">Usage History (20s)</div>
+        <div class="chart-header">
+            <span class="chart-title">Usage</span>
+            <span class="chart-title" id="usage-duration">(${config.historyDuration}s)</span>
+        </div>
         <div class="chart">
             <canvas id="usageChart"></canvas>
         </div>
@@ -427,7 +603,10 @@ function getWebviewContent(): string {
     </div>
 
     <div class="chart-container">
-        <div class="chart-title">Power History (20s)</div>
+        <div class="chart-header">
+            <span class="chart-title">Power</span>
+            <span class="chart-title" id="power-duration">(${config.historyDuration}s)</span>
+        </div>
         <div class="chart">
             <canvas id="powerChart"></canvas>
         </div>
@@ -447,9 +626,11 @@ function getWebviewContent(): string {
         </div>
     </div>
 
-    <div class="thermal">
-        <span class="thermal-label">Thermal Pressure:</span>
-        <span class="thermal-value" id="thermal">--</span>
+    <div class="footer">
+        <div class="thermal">
+            <span>Thermal:</span>
+            <span class="thermal-value" id="thermal">--</span>
+        </div>
     </div>
 
     <script>
@@ -461,6 +642,26 @@ function getWebviewContent(): string {
         const powerCtx = powerCanvas.getContext('2d');
 
         let history = [];
+        let currentSettings = { sampleRate: ${config.sampleRate}, historyDuration: ${config.historyDuration} };
+
+        function toggleSettings() {
+            document.getElementById('settings').classList.toggle('visible');
+        }
+
+        function updateSetting(key, value) {
+            const numValue = parseInt(value);
+            currentSettings[key] = numValue;
+
+            if (key === 'sampleRate') {
+                document.getElementById('sampleRateValue').textContent = numValue + 'ms';
+            } else if (key === 'historyDuration') {
+                document.getElementById('historyDurationValue').textContent = numValue + 's';
+                document.getElementById('usage-duration').textContent = '(' + numValue + 's)';
+                document.getElementById('power-duration').textContent = '(' + numValue + 's)';
+            }
+
+            vscode.postMessage({ type: 'updateSettings', [key]: numValue });
+        }
 
         function resizeCanvas() {
             const dpr = window.devicePixelRatio || 1;
@@ -474,11 +675,11 @@ function getWebviewContent(): string {
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
-        function drawChart(ctx, canvas, data, maxValue, colors) {
+        function drawChart(ctx, canvas, data, maxValue, colors, timeRangeMs) {
             const rect = canvas.getBoundingClientRect();
             const width = rect.width;
             const height = rect.height;
-            const padding = { top: 10, right: 10, bottom: 20, left: 40 };
+            const padding = { top: 8, right: 8, bottom: 16, left: 32 };
             const chartWidth = width - padding.left - padding.right;
             const chartHeight = height - padding.top - padding.bottom;
 
@@ -495,25 +696,24 @@ function getWebviewContent(): string {
                 ctx.stroke();
 
                 ctx.fillStyle = 'rgba(128, 128, 128, 0.6)';
-                ctx.font = '10px sans-serif';
+                ctx.font = '9px sans-serif';
                 ctx.textAlign = 'right';
                 const label = Math.round(maxValue * (4 - i) / 4);
-                ctx.fillText(label.toString(), padding.left - 5, y + 3);
+                ctx.fillText(label.toString(), padding.left - 4, y + 3);
             }
 
             if (data.length < 2) return;
 
             const now = Date.now();
-            const timeRange = 20000; // 20 seconds
 
             colors.forEach((color, seriesIdx) => {
                 ctx.strokeStyle = color;
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 1.5;
                 ctx.beginPath();
 
                 let started = false;
                 data.forEach((point, i) => {
-                    const x = padding.left + ((point.t - (now - timeRange)) / timeRange) * chartWidth;
+                    const x = padding.left + ((point.t - (now - timeRangeMs)) / timeRangeMs) * chartWidth;
                     const values = Array.isArray(point.v) ? point.v : [point.v];
                     const value = values[seriesIdx] || 0;
                     const y = padding.top + chartHeight - (value / maxValue) * chartHeight;
@@ -531,8 +731,17 @@ function getWebviewContent(): string {
             });
         }
 
-        function updateUI(metrics, hist) {
+        function updateUI(metrics, hist, settings) {
             history = hist;
+            if (settings) {
+                currentSettings = settings;
+                document.getElementById('sampleRate').value = settings.sampleRate;
+                document.getElementById('sampleRateValue').textContent = settings.sampleRate + 'ms';
+                document.getElementById('historyDuration').value = settings.historyDuration;
+                document.getElementById('historyDurationValue').textContent = settings.historyDuration + 's';
+                document.getElementById('usage-duration').textContent = '(' + settings.historyDuration + 's)';
+                document.getElementById('power-duration').textContent = '(' + settings.historyDuration + 's)';
+            }
 
             // Update cards
             document.getElementById('gpu-value').textContent = metrics.gpu.activePercent + '%';
@@ -559,6 +768,8 @@ function getWebviewContent(): string {
             }
 
             // Prepare chart data
+            const timeRangeMs = currentSettings.historyDuration * 1000;
+
             const usageData = history.map(h => ({
                 t: h.timestamp,
                 v: [h.gpu, h.cpu]
@@ -572,14 +783,14 @@ function getWebviewContent(): string {
             // Find max power for scaling
             const maxPower = Math.max(30, ...history.map(h => h.power));
 
-            drawChart(usageCtx, usageCanvas, usageData, 100, ['#42a5f5', '#66bb6a']);
-            drawChart(powerCtx, powerCanvas, powerData, maxPower, ['#ffa726', '#ef5350', '#ab47bc']);
+            drawChart(usageCtx, usageCanvas, usageData, 100, ['#42a5f5', '#66bb6a'], timeRangeMs);
+            drawChart(powerCtx, powerCanvas, powerData, maxPower, ['#ffa726', '#ef5350', '#ab47bc'], timeRangeMs);
         }
 
         window.addEventListener('message', event => {
             const message = event.data;
             if (message.type === 'update') {
-                updateUI(message.metrics, message.history);
+                updateUI(message.metrics, message.history, message.settings);
             }
         });
     </script>

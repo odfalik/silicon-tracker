@@ -17,46 +17,58 @@
   "contributes": {
     "commands": [
       {
-        "command": "asitop.start",
+        "command": "siliconTracker.start",
         "title": "Silicon Tracker: Start Monitoring"
       },
       {
-        "command": "asitop.stop",
+        "command": "siliconTracker.stop",
         "title": "Silicon Tracker: Stop Monitoring"
       },
       {
-        "command": "asitop.showPanel",
+        "command": "siliconTracker.showPanel",
         "title": "Silicon Tracker: Open Monitor Panel"
       },
       {
-        "command": "asitop.showDetails",
+        "command": "siliconTracker.showDetails",
         "title": "Silicon Tracker: Show Details (Text)"
       }
     ],
     "configuration": {
       "title": "Silicon Tracker",
       "properties": {
-        "asitop.refreshInterval": {
+        "siliconTracker.sampleRate": {
           "type": "number",
           "default": 1000,
-          "description": "Refresh interval in milliseconds"
+          "minimum": 500,
+          "maximum": 10000,
+          "description": "Sample rate in milliseconds when panel is open (500-10000)"
         },
-        "asitop.statusBarDisplay": {
+        "siliconTracker.backgroundSampleRate": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1000,
+          "maximum": 30000,
+          "description": "Sample rate in milliseconds when panel is closed (1000-30000)"
+        },
+        "siliconTracker.historyDuration": {
+          "type": "number",
+          "default": 20,
+          "minimum": 10,
+          "maximum": 120,
+          "description": "History duration in seconds (10-120)"
+        },
+        "siliconTracker.statusBarDisplay": {
           "type": "string",
-          "enum": ["gpu", "cpu", "power", "all"],
+          "enum": ["gpu", "cpu", "power", "all", "none"],
           "enumDescriptions": [
             "Show GPU usage percentage",
             "Show CPU usage percentage",
             "Show power consumption in watts",
-            "Show all metrics (compact)"
+            "Show all metrics (compact)",
+            "Hide status bar item"
           ],
           "default": "gpu",
           "description": "What to display in the status bar"
-        },
-        "asitop.sudoPassword": {
-          "type": "string",
-          "default": "",
-          "description": "Sudo password for powermetrics (leave empty to be prompted or use passwordless sudo)"
         }
       }
     }
