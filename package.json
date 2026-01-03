@@ -1,0 +1,82 @@
+{
+  "name": "silicon-tracker",
+  "displayName": "Silicon Tracker",
+  "description": "Live GPU, CPU, and power metrics for Apple Silicon Macs in VS Code",
+  "version": "0.1.0",
+  "publisher": "oded",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "asitop.start",
+        "title": "Silicon Tracker: Start Monitoring"
+      },
+      {
+        "command": "asitop.stop",
+        "title": "Silicon Tracker: Stop Monitoring"
+      },
+      {
+        "command": "asitop.showPanel",
+        "title": "Silicon Tracker: Open Monitor Panel"
+      },
+      {
+        "command": "asitop.showDetails",
+        "title": "Silicon Tracker: Show Details (Text)"
+      }
+    ],
+    "configuration": {
+      "title": "Silicon Tracker",
+      "properties": {
+        "asitop.refreshInterval": {
+          "type": "number",
+          "default": 1000,
+          "description": "Refresh interval in milliseconds"
+        },
+        "asitop.statusBarDisplay": {
+          "type": "string",
+          "enum": ["gpu", "cpu", "power", "all"],
+          "enumDescriptions": [
+            "Show GPU usage percentage",
+            "Show CPU usage percentage",
+            "Show power consumption in watts",
+            "Show all metrics (compact)"
+          ],
+          "default": "gpu",
+          "description": "What to display in the status bar"
+        },
+        "asitop.sudoPassword": {
+          "type": "string",
+          "default": "",
+          "description": "Sudo password for powermetrics (leave empty to be prompted or use passwordless sudo)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "plist": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/plist": "^3.0.5",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  }
+}
