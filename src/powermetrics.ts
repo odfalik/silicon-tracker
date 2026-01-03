@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as child_process from 'child_process';
 import * as plist from 'plist';
 
@@ -19,11 +20,80 @@ export interface CpuMetrics {
     packagePowerW: number;
 }
 
+export interface MemoryMetrics {
+    totalGB: number;
+    usedGB: number;
+    usedPercent: number;
+    swapUsedGB: number;
+    swapTotalGB: number;
+    pressure: 'nominal' | 'warn' | 'critical';
+}
+
 export interface Metrics {
     gpu: GpuMetrics;
     cpu: CpuMetrics;
+    memory: MemoryMetrics;
     thermalPressure: string;
     timestamp: Date;
+}
+
+// Collect memory metrics using macOS commands (no sudo required)
+export function collectMemoryMetrics(): MemoryMetrics {
+    const totalBytes = os.totalmem();
+    const totalGB = totalBytes / (1024 * 1024 * 1024);
+
+    let usedGB = 0;
+    let pressure: 'nominal' | 'warn' | 'critical' = 'nominal';
+    let swapUsedGB = 0;
+    let swapTotalGB = 0;
+
+    try {
+        // Get memory pressure level
+        const pressureOutput = child_process.execSync('memory_pressure', { encoding: 'utf8', timeout: 1000 });
+        if (pressureOutput.includes('critical')) {
+            pressure = 'critical';
+        } else if (pressureOutput.includes('warn')) {
+            pressure = 'warn';
+        }
+
+        // Parse vm_stat for detailed memory info
+        const vmStat = child_process.execSync('vm_stat', { encoding: 'utf8', timeout: 1000 });
+        const pageSize = 16384; // Apple Silicon uses 16KB pages
+
+        const parsePages = (pattern: RegExp): number => {
+            const match = vmStat.match(pattern);
+            return match ? parseInt(match[1], 10) : 0;
+        };
+
+        const wired = parsePages(/Pages wired down:\s+(\d+)/);
+        const active = parsePages(/Pages active:\s+(\d+)/);
+        const compressed = parsePages(/Pages occupied by compressor:\s+(\d+)/);
+
+        // Used = wired + active + compressed (similar to Activity Monitor)
+        const usedPages = wired + active + compressed;
+        usedGB = (usedPages * pageSize) / (1024 * 1024 * 1024);
+
+        // Get swap usage
+        const swapOutput = child_process.execSync('sysctl vm.swapusage', { encoding: 'utf8', timeout: 1000 });
+        const swapMatch = swapOutput.match(/total = ([\d.]+)M\s+used = ([\d.]+)M/);
+        if (swapMatch) {
+            swapTotalGB = parseFloat(swapMatch[1]) / 1024;
+            swapUsedGB = parseFloat(swapMatch[2]) / 1024;
+        }
+    } catch {
+        // Fallback to basic Node.js calculation
+        const freeBytes = os.freemem();
+        usedGB = (totalBytes - freeBytes) / (1024 * 1024 * 1024);
+    }
+
+    return {
+        totalGB,
+        usedGB,
+        usedPercent: Math.round((usedGB / totalGB) * 100),
+        swapUsedGB,
+        swapTotalGB,
+        pressure
+    };
 }
 
 export type ErrorCallback = (error: { type: 'sudo' | 'general'; message: string }) => void;
@@ -238,6 +308,7 @@ export class PowerMetricsCollector {
             return {
                 gpu: gpuMetrics,
                 cpu: cpuMetrics,
+                memory: collectMemoryMetrics(),
                 thermalPressure,
                 timestamp
             };

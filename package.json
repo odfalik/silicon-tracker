@@ -77,17 +77,14 @@
           "description": "History duration in seconds (10-120)"
         },
         "siliconTracker.statusBarDisplay": {
-          "type": "string",
-          "enum": ["gpu", "cpu", "power", "all", "none"],
-          "enumDescriptions": [
-            "Show GPU usage percentage",
-            "Show CPU usage percentage",
-            "Show power consumption in watts",
-            "Show all metrics (compact)",
-            "Hide status bar item"
-          ],
-          "default": "gpu",
-          "description": "What to display in the status bar"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["gpu", "cpu", "memory", "power"]
+          },
+          "uniqueItems": true,
+          "default": ["gpu"],
+          "description": "Metrics to display in the status bar (e.g., [\"gpu\", \"memory\", \"power\"])"
         }
       }
     }

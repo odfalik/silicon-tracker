@@ -19,6 +19,8 @@ interface MetricsHistoryEntry {
     power: number;
     cpuPower: number;
     gpuPower: number;
+    memory: number;
+    swap: number;
 }
 
 function getConfig() {
@@ -27,7 +29,7 @@ function getConfig() {
         sampleRate: config.get<number>('sampleRate', 1000),
         backgroundSampleRate: config.get<number>('backgroundSampleRate', 2000),
         historyDuration: config.get<number>('historyDuration', 20),
-        statusBarDisplay: config.get<string>('statusBarDisplay', 'gpu')
+        statusBarDisplay: config.get<string[]>('statusBarDisplay', ['gpu'])
     };
 }
 
@@ -193,7 +195,9 @@ function onMetricsUpdate(metrics: Metrics) {
         pCores: metrics.cpu.pClusterActive,
         power: metrics.cpu.packagePowerW,
         cpuPower: metrics.cpu.cpuPowerW,
-        gpuPower: metrics.cpu.gpuPowerW
+        gpuPower: metrics.cpu.gpuPowerW,
+        memory: metrics.memory.usedPercent,
+        swap: metrics.memory.swapUsedGB
     };
     metricsHistory.push(entry);
 
@@ -207,7 +211,7 @@ function onMetricsUpdate(metrics: Metrics) {
 
 function updateStatusBarVisibility() {
     const config = getConfig();
-    if (config.statusBarDisplay === 'none') {
+    if (config.statusBarDisplay.length === 0) {
         statusBarItem.hide();
     } else {
         statusBarItem.show();
@@ -218,47 +222,51 @@ function updateStatusBar() {
     if (!lastMetrics) return;
 
     const config = getConfig();
-    const displayMode = config.statusBarDisplay;
+    const displayItems = config.statusBarDisplay;
     const m = lastMetrics;
 
-    if (displayMode === 'none') {
+    if (displayItems.length === 0) {
         statusBarItem.hide();
         return;
     }
 
-    let text = '';
-    let tooltip = '';
+    const textParts: string[] = [];
+    const tooltipParts: string[] = [];
     let isWarning = false;
 
-    switch (displayMode) {
-        case 'gpu':
-            text = `$(pulse) GPU ${m.gpu.activePercent}%`;
-            tooltip = `GPU: ${m.gpu.activePercent}% @ ${m.gpu.freqMHz} MHz`;
-            isWarning = m.gpu.activePercent > 80;
-            break;
-        case 'cpu':
-            const avgCpu = Math.round((m.cpu.eClusterActive + m.cpu.pClusterActive) / 2);
-            text = `$(cpu) CPU ${avgCpu}%`;
-            tooltip = `E-Cores: ${m.cpu.eClusterActive}%\nP-Cores: ${m.cpu.pClusterActive}%`;
-            isWarning = avgCpu > 80;
-            break;
-        case 'power':
-            text = `$(zap) ${m.cpu.packagePowerW.toFixed(1)}W`;
-            tooltip = `CPU: ${m.cpu.cpuPowerW.toFixed(1)}W | GPU: ${m.cpu.gpuPowerW.toFixed(1)}W`;
-            isWarning = m.cpu.packagePowerW > 30;
-            break;
-        case 'all':
-            const avg = Math.round((m.cpu.eClusterActive + m.cpu.pClusterActive) / 2);
-            text = `$(pulse) G${m.gpu.activePercent}% $(cpu) C${avg}% $(zap) ${m.cpu.packagePowerW.toFixed(0)}W`;
-            tooltip = `GPU: ${m.gpu.activePercent}%\nCPU: ${avg}%\nPower: ${m.cpu.packagePowerW.toFixed(1)}W`;
-            isWarning = m.gpu.activePercent > 80 || avg > 80;
-            break;
-        default:
-            text = `$(pulse) GPU ${m.gpu.activePercent}%`;
-            tooltip = `GPU: ${m.gpu.activePercent}%`;
+    for (const item of displayItems) {
+        switch (item) {
+            case 'gpu':
+                textParts.push(`$(pulse) G${m.gpu.activePercent}%`);
+                tooltipParts.push(`GPU: ${m.gpu.activePercent}% @ ${m.gpu.freqMHz} MHz`);
+                if (m.gpu.activePercent > 80) isWarning = true;
+                break;
+            case 'cpu':
+                const avgCpu = Math.round((m.cpu.eClusterActive + m.cpu.pClusterActive) / 2);
+                textParts.push(`$(cpu) C${avgCpu}%`);
+                tooltipParts.push(`CPU: ${avgCpu}% (E: ${m.cpu.eClusterActive}% | P: ${m.cpu.pClusterActive}%)`);
+                if (avgCpu > 80) isWarning = true;
+                break;
+            case 'memory':
+                textParts.push(`$(database) M${m.memory.usedPercent}%`);
+                const swapInfo = m.memory.swapUsedGB > 0.01
+                    ? ` | Swap: ${m.memory.swapUsedGB.toFixed(1)}GB`
+                    : '';
+                tooltipParts.push(`Memory: ${m.memory.usedGB.toFixed(1)}/${m.memory.totalGB.toFixed(0)}GB (${m.memory.usedPercent}%)${swapInfo}`);
+                if (m.memory.usedPercent > 85 || m.memory.pressure !== 'nominal') isWarning = true;
+                break;
+            case 'power':
+                textParts.push(`$(zap) ${m.cpu.packagePowerW.toFixed(0)}W`);
+                tooltipParts.push(`Power: ${m.cpu.packagePowerW.toFixed(1)}W (CPU: ${m.cpu.cpuPowerW.toFixed(1)}W | GPU: ${m.cpu.gpuPowerW.toFixed(1)}W)`);
+                if (m.cpu.packagePowerW > 30) isWarning = true;
+                break;
+        }
     }
 
+    const text = textParts.join(' ');
+    let tooltip = tooltipParts.join('\n');
     tooltip += '\nClick to open monitor panel';
+
     statusBarItem.text = text;
     statusBarItem.tooltip = tooltip;
     statusBarItem.backgroundColor = isWarning
@@ -313,6 +321,9 @@ function showPanel(context: vscode.ExtensionContext) {
             if (message.historyDuration !== undefined) {
                 config.update('historyDuration', message.historyDuration, vscode.ConfigurationTarget.Global);
             }
+            if (message.statusBarDisplay !== undefined) {
+                config.update('statusBarDisplay', message.statusBarDisplay, vscode.ConfigurationTarget.Global);
+            }
         }
     }, null, context.subscriptions);
 
@@ -333,7 +344,8 @@ function updatePanel() {
         history: metricsHistory,
         settings: {
             sampleRate: config.sampleRate,
-            historyDuration: config.historyDuration
+            historyDuration: config.historyDuration,
+            statusBarDisplay: config.statusBarDisplay
         }
     });
 }
@@ -438,6 +450,22 @@ function getWebviewContent(): string {
             text-align: right;
             color: var(--vscode-descriptionForeground);
         }
+        .checkbox-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .checkbox-label input[type="checkbox"] {
+            accent-color: var(--vscode-focusBorder);
+            cursor: pointer;
+        }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -467,6 +495,7 @@ function getWebviewContent(): string {
         }
         .gpu-value { color: #42a5f5; }
         .cpu-value { color: #66bb6a; }
+        .memory-value { color: #ce93d8; }
         .power-value { color: #ffa726; }
         .chart-container {
             background: var(--vscode-sideBar-background);
@@ -562,6 +591,27 @@ function getWebviewContent(): string {
                 <span class="setting-value" id="historyDurationValue">${config.historyDuration}s</span>
             </div>
         </div>
+        <div class="setting-row">
+            <span class="setting-label">Status Bar</span>
+            <div class="setting-control checkbox-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="sb-gpu" onchange="updateStatusBar()" ${config.statusBarDisplay.includes('gpu') ? 'checked' : ''}>
+                    <span>GPU</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="sb-cpu" onchange="updateStatusBar()" ${config.statusBarDisplay.includes('cpu') ? 'checked' : ''}>
+                    <span>CPU</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="sb-memory" onchange="updateStatusBar()" ${config.statusBarDisplay.includes('memory') ? 'checked' : ''}>
+                    <span>Mem</span>
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="sb-power" onchange="updateStatusBar()" ${config.statusBarDisplay.includes('power') ? 'checked' : ''}>
+                    <span>Power</span>
+                </label>
+            </div>
+        </div>
     </div>
 
     <div class="grid">
@@ -574,6 +624,11 @@ function getWebviewContent(): string {
             <div class="card-title">CPU Usage</div>
             <div class="card-value cpu-value" id="cpu-value">--%</div>
             <div class="card-subtitle" id="cpu-detail">E: --% | P: --%</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Memory</div>
+            <div class="card-value memory-value" id="memory-value">--%</div>
+            <div class="card-subtitle" id="memory-detail">--/-- GB</div>
         </div>
         <div class="card">
             <div class="card-title">Power</div>
@@ -598,6 +653,10 @@ function getWebviewContent(): string {
             <div class="legend-item">
                 <div class="legend-color" style="background: #66bb6a;"></div>
                 <span>CPU</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #ce93d8;"></div>
+                <span>Memory</span>
             </div>
         </div>
     </div>
@@ -631,6 +690,14 @@ function getWebviewContent(): string {
             <span>Thermal:</span>
             <span class="thermal-value" id="thermal">--</span>
         </div>
+        <div class="thermal">
+            <span>Memory:</span>
+            <span class="thermal-value" id="memory-pressure">--</span>
+        </div>
+        <div class="thermal" id="swap-container" style="display: none;">
+            <span>Swap:</span>
+            <span class="thermal-value" id="swap-value">--</span>
+        </div>
     </div>
 
     <script>
@@ -661,6 +728,15 @@ function getWebviewContent(): string {
             }
 
             vscode.postMessage({ type: 'updateSettings', [key]: numValue });
+        }
+
+        function updateStatusBar() {
+            const items = [];
+            if (document.getElementById('sb-gpu').checked) items.push('gpu');
+            if (document.getElementById('sb-cpu').checked) items.push('cpu');
+            if (document.getElementById('sb-memory').checked) items.push('memory');
+            if (document.getElementById('sb-power').checked) items.push('power');
+            vscode.postMessage({ type: 'updateSettings', statusBarDisplay: items });
         }
 
         function resizeCanvas() {
@@ -741,6 +817,13 @@ function getWebviewContent(): string {
                 document.getElementById('historyDurationValue').textContent = settings.historyDuration + 's';
                 document.getElementById('usage-duration').textContent = '(' + settings.historyDuration + 's)';
                 document.getElementById('power-duration').textContent = '(' + settings.historyDuration + 's)';
+                // Sync status bar checkboxes
+                if (settings.statusBarDisplay) {
+                    document.getElementById('sb-gpu').checked = settings.statusBarDisplay.includes('gpu');
+                    document.getElementById('sb-cpu').checked = settings.statusBarDisplay.includes('cpu');
+                    document.getElementById('sb-memory').checked = settings.statusBarDisplay.includes('memory');
+                    document.getElementById('sb-power').checked = settings.statusBarDisplay.includes('power');
+                }
             }
 
             // Update cards
@@ -756,6 +839,12 @@ function getWebviewContent(): string {
             document.getElementById('power-detail').textContent =
                 'CPU: ' + metrics.cpu.cpuPowerW.toFixed(1) + 'W | GPU: ' + metrics.cpu.gpuPowerW.toFixed(1) + 'W';
 
+            // Memory card
+            document.getElementById('memory-value').textContent = metrics.memory.usedPercent + '%';
+            document.getElementById('memory-detail').textContent =
+                metrics.memory.usedGB.toFixed(1) + '/' + metrics.memory.totalGB.toFixed(0) + ' GB';
+
+            // Thermal pressure
             const thermalEl = document.getElementById('thermal');
             thermalEl.textContent = metrics.thermalPressure;
             thermalEl.className = 'thermal-value';
@@ -767,12 +856,43 @@ function getWebviewContent(): string {
                 thermalEl.classList.add('thermal-serious');
             }
 
+            // Memory pressure
+            const memPressureEl = document.getElementById('memory-pressure');
+            const memPressure = metrics.memory.pressure;
+            memPressureEl.textContent = memPressure.charAt(0).toUpperCase() + memPressure.slice(1);
+            memPressureEl.className = 'thermal-value';
+            if (memPressure === 'nominal') {
+                memPressureEl.classList.add('thermal-nominal');
+            } else if (memPressure === 'warn') {
+                memPressureEl.classList.add('thermal-fair');
+            } else if (memPressure === 'critical') {
+                memPressureEl.classList.add('thermal-serious');
+            }
+
+            // Swap usage
+            const swapContainer = document.getElementById('swap-container');
+            const swapEl = document.getElementById('swap-value');
+            if (metrics.memory.swapUsedGB > 0.01) {
+                swapContainer.style.display = 'flex';
+                swapEl.textContent = metrics.memory.swapUsedGB.toFixed(1) + ' GB';
+                swapEl.className = 'thermal-value';
+                if (metrics.memory.swapUsedGB < 1) {
+                    swapEl.classList.add('thermal-nominal');
+                } else if (metrics.memory.swapUsedGB < 4) {
+                    swapEl.classList.add('thermal-fair');
+                } else {
+                    swapEl.classList.add('thermal-serious');
+                }
+            } else {
+                swapContainer.style.display = 'none';
+            }
+
             // Prepare chart data
             const timeRangeMs = currentSettings.historyDuration * 1000;
 
             const usageData = history.map(h => ({
                 t: h.timestamp,
-                v: [h.gpu, h.cpu]
+                v: [h.gpu, h.cpu, h.memory]
             }));
 
             const powerData = history.map(h => ({
@@ -783,7 +903,7 @@ function getWebviewContent(): string {
             // Find max power for scaling
             const maxPower = Math.max(30, ...history.map(h => h.power));
 
-            drawChart(usageCtx, usageCanvas, usageData, 100, ['#42a5f5', '#66bb6a'], timeRangeMs);
+            drawChart(usageCtx, usageCanvas, usageData, 100, ['#42a5f5', '#66bb6a', '#ce93d8'], timeRangeMs);
             drawChart(powerCtx, powerCanvas, powerData, maxPower, ['#ffa726', '#ef5350', '#ab47bc'], timeRangeMs);
         }
 
@@ -805,6 +925,10 @@ function showDetails() {
     }
 
     const m = lastMetrics;
+    const swapInfo = m.memory.swapUsedGB > 0.01
+        ? `  Swap:     ${m.memory.swapUsedGB.toFixed(2)} / ${m.memory.swapTotalGB.toFixed(2)} GB`
+        : '  Swap:     Not in use';
+
     const details = `
 Silicon Tracker - Detailed Stats
 ========================================
@@ -823,6 +947,13 @@ CPU (P-Cores)
 -------------
   Usage:     ${m.cpu.pClusterActive}%
   Frequency: ${m.cpu.pClusterFreqMHz} MHz
+
+Memory
+------
+  Usage:    ${m.memory.usedPercent}%
+  Used:     ${m.memory.usedGB.toFixed(2)} / ${m.memory.totalGB.toFixed(2)} GB
+  Pressure: ${m.memory.pressure}
+${swapInfo}
 
 Power Consumption
 -----------------
